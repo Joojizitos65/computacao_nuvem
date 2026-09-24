@@ -1,0 +1,12 @@
+# Evita copiar arquivos desnecessarios ou sensiveis para dentro da imagem
+.git
+.gitignore
+.env
+*.md
+docker-compose.yml
+locustfile.py
+Locust_*.csv
+__pycache__/
+*.pyc
+*.pyo
+reports/

@@ -1,0 +1,10 @@
+# Nunca versionar configuracao local / segredos
+.env
+
+# Artefatos Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Resultados de teste de carga
+Locust_*.csv

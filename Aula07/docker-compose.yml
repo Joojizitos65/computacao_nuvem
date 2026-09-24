@@ -1,0 +1,56 @@
+services:
+  # Front-end acessado pelo usuario. Unica porta publicada no host.
+  web_app:
+    build:
+      context: .
+      dockerfile: Dockerfile.webapp
+    image: radar-enem-web:${APP_VERSION:-v2}
+    container_name: radar-enem-web
+    ports:
+      - "5000:5000"
+    environment:
+      - CALCULADORA_URL=http://calculadora_api:8001/api/CalculaNota
+      - CALCULADORA_HEALTH_URL=http://calculadora_api:8001/health
+      - APP_VERSION=${APP_VERSION:-v2}
+      - AMBIENTE=${AMBIENTE:-producao}
+    networks:
+      - radar_network
+    depends_on:
+      calculadora_api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Servico interno de calculo. NAO publica porta no host (fica so na rede interna).
+  calculadora_api:
+    build: .
+    image: radar-enem-calculadora:${APP_VERSION:-v2}
+    container_name: radar-enem-calculadora
+    expose:
+      - "8001"
+    environment:
+      - APP_VERSION=${APP_VERSION:-v2}
+      - AMBIENTE=${AMBIENTE:-producao}
+      - LATENCIA_SIMULADA=${LATENCIA_SIMULADA:-0.05}
+    networks:
+      - radar_network
+    restart: unless-stopped
+
+  # Ferramenta de teste de carga. Perfil opcional (nao sobe por padrao).
+  locust_tester:
+    image: locustio/locust
+    container_name: radar-enem-locust
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./locustfile.py:/mnt/locust/locustfile.py
+    command: -f /mnt/locust/locustfile.py --host http://calculadora_api:8001
+    networks:
+      - radar_network
+    depends_on:
+      - calculadora_api
+    profiles:
+      - testes
+
+networks:
+  radar_network:
+    driver: bridge
