@@ -1,0 +1,159 @@
+services:
+  # ------------------------------------------------------------------
+  # Front publico. Unica porta publicada para o usuario final.
+  # ------------------------------------------------------------------
+  web_app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.webapp
+    image: radar-enem-web:${APP_VERSION:-v3}
+    container_name: radar-enem-web
+    ports:
+      - "5000:5000"
+    environment:
+      - CALCULADORA_URL=http://calculadora_api:8001/api/CalculaNota
+      - CALCULADORA_HEALTH_URL=http://calculadora_api:8001/health
+      - CALCULADORA_HISTORICO_URL=http://calculadora_api:8001/api/historico
+      - APP_VERSION=${APP_VERSION:-v3}
+      - AMBIENTE=${AMBIENTE:-producao}
+    networks:
+      - radar_network
+    depends_on:
+      calculadora_api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Calculo + persistencia. Nao publica porta (so na rede interna).
+  # ------------------------------------------------------------------
+  calculadora_api:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.api
+    image: radar-enem-calculadora:${APP_VERSION:-v3}
+    container_name: radar-enem-calculadora
+    expose:
+      - "8001"
+    environment:
+      - APP_VERSION=${APP_VERSION:-v3}
+      - AMBIENTE=${AMBIENTE:-producao}
+      - LATENCIA_SIMULADA=${LATENCIA_SIMULADA:-0.05}
+      # Dados estruturados -> PostgreSQL
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-radar}:${POSTGRES_PASSWORD:-radar_pass}@postgres:5432/${POSTGRES_DB:-radar}
+      # Cache -> Redis
+      - REDIS_URL=redis://redis:6379/0
+      - CACHE_TTL=${CACHE_TTL:-300}
+      # Object storage -> MinIO (S3-compatible)
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - S3_BUCKET=${S3_BUCKET:-radar-exports}
+    networks:
+      - radar_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Dados estruturados: PostgreSQL (volume dedicado = persistencia).
+  # ------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: radar-enem-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-radar}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-radar_pass}
+      - POSTGRES_DB=${POSTGRES_DB:-radar}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - radar_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-radar} -d ${POSTGRES_DB:-radar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Cache: Redis (volume para persistir snapshots, opcional).
+  # ------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: radar-enem-redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    networks:
+      - radar_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Object storage: MinIO (API S3-compatible). Console em :9001.
+  # ------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: radar-enem-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # API S3
+      - "9001:9001"   # Console web
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - miniodata:/data
+    networks:
+      - radar_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------
+  # Teste de carga (opcional, profile "testes").
+  # ------------------------------------------------------------------
+  locust_tester:
+    image: locustio/locust
+    container_name: radar-enem-locust
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./locustfile.py:/mnt/locust/locustfile.py
+    command: -f /mnt/locust/locustfile.py --host http://calculadora_api:8001
+    networks:
+      - radar_network
+    depends_on:
+      - calculadora_api
+    profiles:
+      - testes
+
+# ------------------------------------------------------------------
+# Volumes nomeados = dados que sobrevivem a remocao dos containers.
+# Esta e a materializacao do conceito central da Aula 8.
+# ------------------------------------------------------------------
+volumes:
+  pgdata:
+    name: radar-pgdata
+  redisdata:
+    name: radar-redisdata
+  miniodata:
+    name: radar-miniodata
+
+networks:
+  radar_network:
+    driver: bridge
