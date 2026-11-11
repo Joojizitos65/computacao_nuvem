@@ -1,0 +1,55 @@
+networks:
+  frontend-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.10.0/24
+  backend-net:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.20.20.0/24
+
+services:
+  # BANCO DE DADOS: somente na backend-net (sub-rede interna), sem portas publicadas no host
+  db-postgres:
+    image: postgres:15-alpine
+    container_name: radar-db
+    environment:
+      POSTGRES_USER: radar_admin
+      POSTGRES_PASSWORD: enem_secret_2026
+      POSTGRES_DB: radarenem
+    networks:
+      backend-net:
+        ipv4_address: 172.20.20.50
+
+  # BACKEND (PONTE MULTI-HOMED): conectado simultaneamente na frontend-net e na backend-net
+  radar-backend:
+    image: nginx:alpine
+    container_name: radar-backend
+    command:
+      - sh
+      - -c
+      - echo '{"aplicacao":"Mini Radar ENEM","status":"ONLINE","banco_privado":"172.20.20.50"}' > /usr/share/nginx/html/index.html && nginx -g 'daemon off;'
+    networks:
+      frontend-net:
+        ipv4_address: 172.20.10.20
+      backend-net:
+        ipv4_address: 172.20.20.20
+    depends_on:
+      - db-postgres
+
+  # REVERSE PROXY (PONTO DE ENTRADA PÚBLICO): único container com porta mapeada no host (8080:80)
+  radar-proxy:
+    image: nginx:alpine
+    container_name: radar-proxy
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      frontend-net:
+        ipv4_address: 172.20.10.10
+    depends_on:
+      - radar-backend
